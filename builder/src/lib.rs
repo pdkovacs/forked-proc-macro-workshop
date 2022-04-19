@@ -14,11 +14,16 @@ pub fn derive_builder(input: TokenStream) -> TokenStream {
 
     let builder_field_definitions = create_builder_field_definitions(&input.data);
     let initial_builder_fields = create_initial_builder_fields(&input.data);
+    let builder_setter_methods = create_builder_setter_methods(&input.data);
 
     let expanded = quote! {
 
         pub struct #builder_ident {
             #builder_field_definitions
+        }
+
+        impl #builder_ident {
+            #builder_setter_methods
         }
 
         impl #impl_generics builder_trait::Builder for #name #ty_generics #where_clause {
@@ -72,6 +77,32 @@ fn create_initial_builder_fields(data: &Data) -> proc_macro2::TokenStream {
                     });
                     quote! {
                         #(#recurse),*
+                    }
+                }
+                Fields::Unnamed(_) | Fields::Unit => unimplemented!()
+            }
+        }
+        Data::Enum(_) | Data::Union(_) => unimplemented!()
+    }
+}
+
+fn create_builder_setter_methods(data: &Data) -> proc_macro2::TokenStream {
+    match *data {
+        Data::Struct(ref data) => {
+            match data.fields {
+                Fields::Named(ref fields) => {
+                    let recurse = fields.named.iter().map(|f| {
+                        let name = &f.ident;
+                        let ty = &f.ty;
+                        quote! {
+                            fn #name(&mut self, #name: #ty) -> &mut Self {
+                                self.#name = Some(#name);
+                                self
+                            }
+                        }
+                    });
+                    quote! {
+                        #(#recurse)*
                     }
                 }
                 Fields::Unnamed(_) | Fields::Unit => unimplemented!()

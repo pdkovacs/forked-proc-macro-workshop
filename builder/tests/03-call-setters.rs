@@ -11,6 +11,7 @@
 //     }
 
 use derive_builder::Builder;
+use builder_trait::Builder;
 
 #[derive(Builder)]
 pub struct Command {
