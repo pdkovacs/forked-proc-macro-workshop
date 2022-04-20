@@ -10,7 +10,7 @@
 //             ...
 //         }
 //     }
-
+use builder_trait::Builder;
 use derive_builder::Builder;
 
 #[derive(Builder)]

@@ -1,5 +1,5 @@
 pub trait Builder {
     type BuilderType;
 
-    fn builder() -> Self::BuilderType; 
+    fn builder() -> Self::BuilderType;
 }
