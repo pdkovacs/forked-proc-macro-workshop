@@ -2,6 +2,7 @@
 // It shows that we can chain method calls on the builder.
 
 use derive_builder::Builder;
+use builder_trait::Builder;
 
 #[derive(Builder)]
 pub struct Command {
