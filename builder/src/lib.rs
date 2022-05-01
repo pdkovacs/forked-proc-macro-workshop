@@ -1,6 +1,6 @@
 use proc_macro::{TokenStream};
 use proc_macro2::{Span};
-use syn::{DeriveInput,parse_macro_input,Ident,Data,Fields};
+use syn::{DeriveInput,parse_macro_input,Ident,Data,Fields, Type, TypePath, Path, PathArguments, AngleBracketedGenericArguments, GenericArgument};
 use quote::*;
 
 #[proc_macro_derive(Builder)]
@@ -59,8 +59,14 @@ fn create_builder_field_definitions(data: &Data) -> proc_macro2::TokenStream {
                     let recurse = fields.named.iter().map(|f| {
                         let name = &f.ident;
                         let ty = &f.ty;
-                        quote! {
-                            #name: Option<#ty>
+                        if let Some(_) = unwrap_optional(ty) {
+                            quote! {
+                                #name: #ty
+                            }
+                        } else {
+                            quote! {
+                                #name: Option<#ty>
+                            }
                         }
                     });
                     quote! {
@@ -104,10 +110,20 @@ fn create_builder_setter_methods(data: &Data) -> proc_macro2::TokenStream {
                     let recurse = fields.named.iter().map(|f| {
                         let field_ident = &f.ident;
                         let field_type = &f.ty;
-                        quote! {
-                            fn #field_ident(&mut self, #field_ident: #field_type) -> &mut Self {
-                                self.#field_ident = Some(#field_ident);
-                                self
+                        let opt_unwrapped_optional = unwrap_optional(field_type);
+                        if let Some(unwrapped_optional) = opt_unwrapped_optional {
+                            quote! {
+                                fn #field_ident(&mut self, #field_ident: #unwrapped_optional) -> &mut Self {
+                                    self.#field_ident = Some(#field_ident);
+                                    self
+                                }
+                            }
+                        } else {
+                            quote! {
+                                fn #field_ident(&mut self, #field_ident: #field_type) -> &mut Self {
+                                    self.#field_ident = Some(#field_ident);
+                                    self
+                                }
                             }
                         }
                     });
@@ -130,8 +146,17 @@ fn create_build_assignments(data: &Data) -> proc_macro2::TokenStream {
                     let recurse = fields.named.iter().map(|f| {
                         let field_ident = &f.ident;
                         let field_name = stringify!(field_ident);
-                        quote! {
-                            #field_ident: self.#field_ident.take().ok_or_else(|| Box::<dyn Error>::from(format!("{} isn't set", #field_name)))?,
+                        if let Some(_) = unwrap_optional(&f.ty) {
+                            quote! {
+                                #field_ident: match self.#field_ident {
+                                    Some(_) => self.#field_ident.take(),
+                                    None => None
+                                }
+                            }
+                        } else {
+                            quote! {
+                                #field_ident: self.#field_ident.take().ok_or_else(|| Box::<dyn Error>::from(format!("{} isn't set", #field_name)))?,
+                            }    
                         }
                     });
                     quote! {
@@ -143,4 +168,37 @@ fn create_build_assignments(data: &Data) -> proc_macro2::TokenStream {
         }
         Data::Enum(_) | Data::Union(_) => unimplemented!()
     }
+}
+
+fn unwrap_optional(ty: &Type) -> Option<&Type> {
+    if let Type::Path(TypePath{
+        qself: None,
+        path: Path{
+            leading_colon: _,
+            segments: path_segments
+        }
+    }) = ty {
+        let option_name = String::from("Option");
+        for item in path_segments {
+            if item.ident.to_string() == option_name {
+                if let PathArguments::AngleBracketed(
+                    AngleBracketedGenericArguments {
+                        colon2_token: _,
+                        lt_token: _,
+                        args: generic_args,
+                        gt_token: _
+                    },
+                ) = &item.arguments {
+                    for arg in generic_args {
+                        if let GenericArgument::Type(
+                            wrapped_type
+                        ) = arg {
+                            return Some(wrapped_type);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
