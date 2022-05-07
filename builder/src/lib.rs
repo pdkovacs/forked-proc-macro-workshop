@@ -5,14 +5,20 @@ use quote::*;
 use std::error::Error;
 use syn::spanned::Spanned;
 
+struct SetterMethod {
+    name: String,
+    param_type: Type,
+}
+
 struct BuilderField {
     ident: syn::Ident,
     ty: syn::Type,
+    custom_setter_method: Option<SetterMethod>,
 }
 
 struct ErrorWithSpan {
     error: Box<dyn Error>,
-    span: proc_macro2::Span
+    span: proc_macro2::Span,
 }
 
 fn handle_error_with_span(err_with_span: ErrorWithSpan) -> TokenStream {
@@ -76,6 +82,29 @@ pub fn derive_builder(input: TokenStream) -> TokenStream {
     return TokenStream::from(expanded);
 }
 
+fn get_builder_method(field: &syn::Field) -> Option<SetterMethod> {
+    let attrs = field.attrs.clone();
+    for attr in attrs.iter() {
+        if let Ok(meta) = attr.parse_meta() {
+            if let syn::Meta::List(list_attrib) = meta {
+                if list_attrib.path.segments[0].ident.to_string() == "builder" {
+                    if let syn::NestedMeta::Meta(nested_meta) = &list_attrib.nested[0] {
+                        if let syn::Meta::NameValue(name_value) = nested_meta {
+                            if let syn::Lit::Str(single_item_method_name) = &name_value.lit {
+                                if name_value.path.segments[0].ident == "each" {
+                                    let method_name = single_item_method_name.value();
+                                    return Some(SetterMethod{ name: method_name, param_type: unwrap_type(&field.ty, &String::from("Vec")).unwrap().clone() });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return None;
+}
+
 fn get_field_definitions(data: &mut Data) -> Result<Vec<BuilderField>, ErrorWithSpan> {
     match *data {
         Data::Struct(ref mut data) => {
@@ -91,6 +120,7 @@ fn get_field_definitions(data: &mut Data) -> Result<Vec<BuilderField>, ErrorWith
                         field_list.push(BuilderField {
                             ident,
                             ty,
+                            custom_setter_method: get_builder_method(field),
                         });
                     }
                     return Ok(field_list);
@@ -104,15 +134,20 @@ fn get_field_definitions(data: &mut Data) -> Result<Vec<BuilderField>, ErrorWith
 
 fn create_builder_field_definitions(fdefs: &Vec<BuilderField>) -> proc_macro2::TokenStream {
     let recurse = fdefs.iter().map(|f| {
-        let name = &f.ident;
+        let field_name = &f.ident;
+
         let ty = &f.ty;
         if let Some(_) = unwrap_optional(ty) {
             quote! {
-                #name: #ty
+                #field_name: #ty
+            }
+        } else if let Some(_) = unwrap_type(ty, &String::from("Vec")) {
+            quote! {
+                #field_name: #ty
             }
         } else {
             quote! {
-                #name: Option<#ty>
+                #field_name: Option<#ty>
             }
         }
     });
@@ -124,8 +159,15 @@ fn create_builder_field_definitions(fdefs: &Vec<BuilderField>) -> proc_macro2::T
 fn create_initial_builder_fields(fdefs: &Vec<BuilderField>) -> proc_macro2::TokenStream {
     let recurse = fdefs.iter().map(|f| {
         let field_ident = &f.ident;
-        quote! {
-            #field_ident: None
+        let vec_item_type = unwrap_type(&f.ty, &String::from("Vec"));
+        if let Some(_) = vec_item_type {
+            quote! {
+                #field_ident: Vec::new()
+            }
+        } else {
+            quote! {
+                #field_ident: None
+            }
         }
     });
     quote! {
@@ -142,6 +184,22 @@ fn create_builder_setter_methods(fdefs: &Vec<BuilderField>) -> proc_macro2::Toke
             quote! {
                 fn #field_ident(&mut self, #field_ident: #unwrapped_optional) -> &mut Self {
                     self.#field_ident = Some(#field_ident);
+                    self
+                }
+            }
+        } else if let Some(ref setter_method) = f.custom_setter_method {
+            let setter_name = syn::Ident::new(&setter_method.name, Span::call_site());
+            let setter_param_type = &setter_method.param_type;
+            quote! {
+                fn #setter_name(&mut self, #field_ident: #setter_param_type) -> &mut Self {
+                    self.#field_ident.push(#field_ident);
+                    self
+                }
+            }    
+        } else if let Some(_) = unwrap_type(&f.ty, &String::from("Vec")) {
+            quote! {
+                fn #field_ident(&mut self, #field_ident: #field_type) -> &mut Self {
+                    self.#field_ident = #field_ident.clone();
                     self
                 }
             }
@@ -162,7 +220,6 @@ fn create_builder_setter_methods(fdefs: &Vec<BuilderField>) -> proc_macro2::Toke
 fn create_build_assignments(fdefs: &Vec<BuilderField>) -> proc_macro2::TokenStream {
     let recurse = fdefs.iter().map(|f| {
         let field_ident = &f.ident;
-        let field_name = stringify!(field_ident);
         if let Some(_) = unwrap_optional(&f.ty) {
             quote! {
                 #field_ident: match self.#field_ident {
@@ -170,9 +227,14 @@ fn create_build_assignments(fdefs: &Vec<BuilderField>) -> proc_macro2::TokenStre
                     None => None
                 }
             }
-        } else {
+        } else if let Some(_) = unwrap_type(&f.ty, &String::from("Vec")) {
             quote! {
-                #field_ident: self.#field_ident.take().ok_or_else(|| Box::<dyn Error>::from(format!("{} isn't set", #field_name)))?,
+                #field_ident: self.#field_ident.clone(),
+            }
+        } else {
+            let missing_field_error_message = format!("{} isn't set", field_ident);
+            quote! {
+                #field_ident: self.#field_ident.take().ok_or_else(|| Box::<dyn Error>::from(#missing_field_error_message))?,
             }    
         }
     });
@@ -181,7 +243,7 @@ fn create_build_assignments(fdefs: &Vec<BuilderField>) -> proc_macro2::TokenStre
     }
 }
 
-fn unwrap_optional(ty: &Type) -> Option<&Type> {
+fn unwrap_type<'a>(ty: &'a Type, from: &String) -> Option<&'a Type> {
     if let Type::Path(TypePath{
         qself: None,
         path: Path{
@@ -190,7 +252,7 @@ fn unwrap_optional(ty: &Type) -> Option<&Type> {
         }
     }) = ty {
         for item in path_segments {
-            if item.ident.to_string() == String::from("Option") {
+            if item.ident.to_string() == String::from(from) {
                 if let PathArguments::AngleBracketed(
                     AngleBracketedGenericArguments {
                         colon2_token: _,
@@ -211,4 +273,8 @@ fn unwrap_optional(ty: &Type) -> Option<&Type> {
         }
     }
     None
+}
+
+fn unwrap_optional(ty: &Type) -> Option<&Type> {
+    return unwrap_type(ty, &String::from("Option"));
 }
