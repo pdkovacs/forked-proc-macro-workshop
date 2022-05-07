@@ -70,6 +70,10 @@ fn quote_by_field_definitions(data: &Data, fields_processor: fn(FieldsIterator) 
 fn create_builder_field_definitions(fields_iterator: FieldsIterator) -> proc_macro2::TokenStream {
     let recurse = fields_iterator.map(|f| {
         let name = &f.ident;
+
+        let attrs = &f.attrs;
+        println!("Attributes: {:?}: {}", name, attrs.len());
+
         let ty = &f.ty;
         if let Some(_) = unwrap_optional(ty) {
             quote! {
