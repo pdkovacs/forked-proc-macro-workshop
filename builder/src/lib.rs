@@ -82,27 +82,35 @@ pub fn derive_builder(input: TokenStream) -> TokenStream {
     return TokenStream::from(expanded);
 }
 
-fn get_builder_method(field: &syn::Field) -> Option<SetterMethod> {
+fn parse_builder_attribute(field_type: &Type, list_attrib: &syn::NestedMeta) -> Result<Option<SetterMethod>, ErrorWithSpan> {
+    if let syn::NestedMeta::Meta(nested_meta) = &list_attrib {
+        if let syn::Meta::NameValue(name_value) = nested_meta {
+            if let syn::Lit::Str(single_item_method_name) = &name_value.lit {
+                if name_value.path.segments[0].ident == "each" {
+                    let method_name = single_item_method_name.value();
+                    return Ok(Some(SetterMethod{ name: method_name, param_type: unwrap_type(field_type, &String::from("Vec")).unwrap().clone() }));
+                }
+            }
+        }
+    }
+    return Err(ErrorWithSpan {
+        error: Box::<dyn Error>::from("invalid builder attribute"),
+        span:  list_attrib.span(),
+    })
+}
+
+fn get_builder_method(field: &syn::Field) -> Result<Option<SetterMethod>, ErrorWithSpan> {
     let attrs = field.attrs.clone();
     for attr in attrs.iter() {
         if let Ok(meta) = attr.parse_meta() {
             if let syn::Meta::List(list_attrib) = meta {
                 if list_attrib.path.segments[0].ident.to_string() == "builder" {
-                    if let syn::NestedMeta::Meta(nested_meta) = &list_attrib.nested[0] {
-                        if let syn::Meta::NameValue(name_value) = nested_meta {
-                            if let syn::Lit::Str(single_item_method_name) = &name_value.lit {
-                                if name_value.path.segments[0].ident == "each" {
-                                    let method_name = single_item_method_name.value();
-                                    return Some(SetterMethod{ name: method_name, param_type: unwrap_type(&field.ty, &String::from("Vec")).unwrap().clone() });
-                                }
-                            }
-                        }
-                    }
+                    return parse_builder_attribute(&field.ty, &list_attrib.nested[0]);
                 }
             }
         }
     }
-    return None;
+    return Ok(None);
 }
 
 fn get_field_definitions(data: &mut Data) -> Result<Vec<BuilderField>, ErrorWithSpan> {
@@ -120,7 +128,7 @@ fn get_field_definitions(data: &mut Data) -> Result<Vec<BuilderField>, ErrorWith
                         field_list.push(BuilderField {
                             ident,
                             ty,
-                            custom_setter_method: get_builder_method(field),
+                            custom_setter_method: get_builder_method(field)?,
                         });
                     }
                     return Ok(field_list);
